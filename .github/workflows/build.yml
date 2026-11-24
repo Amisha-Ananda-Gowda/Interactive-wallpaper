@@ -1,0 +1,136 @@
+name: Build AAG APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Generate Android project
+        run: |
+          P=app/src/main
+          mkdir -p $P/java/com/aag/wallpaper $P/assets $P/res/xml $P/res/values
+          cp wallpaper.html $P/assets/wallpaper.html
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          echo "org.gradle.jvmargs=-Xmx2g" > gradle.properties
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'com.aag.wallpaper'
+            compileSdk 34
+            defaultConfig { applicationId 'com.aag.wallpaper'; minSdk 26; targetSdk 34; versionCode 1; versionName '1.0' }
+          }
+          EOF
+          cat > $P/res/values/strings.xml <<'EOF'
+          <resources><string name="app_name">AAG Wallpaper</string></resources>
+          EOF
+          cat > $P/res/xml/wallpaper.xml <<'EOF'
+          <wallpaper xmlns:android="http://schemas.android.com/apk/res/android" android:description="@string/app_name" />
+          EOF
+          cat > $P/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-feature android:name="android.software.live_wallpaper" android:required="false" />
+            <application android:label="@string/app_name">
+              <activity android:name=".MainActivity" android:exported="true" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+              </activity>
+              <service android:name=".AagService" android:exported="true" android:permission="android.permission.BIND_WALLPAPER">
+                <intent-filter><action android:name="android.service.wallpaper.WallpaperService" /></intent-filter>
+                <meta-data android:name="android.service.wallpaper" android:resource="@xml/wallpaper" />
+              </service>
+            </application>
+          </manifest>
+          EOF
+          cat > $P/java/com/aag/wallpaper/AagService.java <<'EOF'
+          package com.aag.wallpaper;
+          import android.graphics.Canvas;
+          import android.os.*;
+          import android.service.wallpaper.WallpaperService;
+          import android.view.*;
+          import android.webkit.*;
+          public class AagService extends WallpaperService {
+            public Engine onCreateEngine() { return new E(); }
+            class E extends Engine {
+              WebView wv; Handler hd = new Handler(Looper.getMainLooper()); boolean vis;
+              Runnable tick = new Runnable() { public void run() { draw(); if (vis) hd.postDelayed(this, 40); } };
+              public void onCreate(SurfaceHolder s) {
+                super.onCreate(s); setTouchEventsEnabled(true);
+                wv = new WebView(AagService.this);
+                WebSettings st = wv.getSettings(); st.setJavaScriptEnabled(true); st.setDomStorageEnabled(true);
+                wv.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+                wv.loadUrl("file:///android_asset/wallpaper.html?android=1");
+              }
+              public void onSurfaceChanged(SurfaceHolder s, int f, int w, int h) {
+                wv.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY));
+                wv.layout(0, 0, w, h);
+              }
+              void draw() {
+                Canvas c = null; SurfaceHolder s = getSurfaceHolder();
+                try { c = s.lockCanvas(); if (c != null) wv.draw(c); } catch (Exception e) {} finally { if (c != null) s.unlockCanvasAndPost(c); }
+              }
+              public void onVisibilityChanged(boolean v) {
+                vis = v; hd.removeCallbacks(tick);
+                if (v) { wv.onResume(); wv.evaluateJavascript("window.aagSync&&aagSync()", null); hd.post(tick); } else wv.onPause();
+              }
+              public void onTouchEvent(MotionEvent e) { wv.dispatchTouchEvent(e); }
+              public Bundle onCommand(String a, int x, int y, int z, Bundle ex, boolean r) {
+                if ("android.wallpaper.tap".equals(a)) {
+                  long t = SystemClock.uptimeMillis();
+                  wv.dispatchTouchEvent(MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0));
+                  hd.postDelayed(() -> wv.dispatchTouchEvent(MotionEvent.obtain(t, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, y, 0)), 60);
+                }
+                return null;
+              }
+              public void onDestroy() { vis = false; hd.removeCallbacks(tick); wv.destroy(); super.onDestroy(); }
+            }
+          }
+          EOF
+          cat > $P/java/com/aag/wallpaper/MainActivity.java <<'EOF'
+          package com.aag.wallpaper;
+          import android.app.Activity;
+          import android.app.WallpaperManager;
+          import android.content.*;
+          import android.os.Bundle;
+          import android.view.*;
+          import android.webkit.*;
+          import android.widget.*;
+          public class MainActivity extends Activity {
+            protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              WebView wv = new WebView(this);
+              wv.getSettings().setJavaScriptEnabled(true); wv.getSettings().setDomStorageEnabled(true);
+              wv.loadUrl("file:///android_asset/wallpaper.html");
+              FrameLayout f = new FrameLayout(this); f.addView(wv);
+              Button bt = new Button(this); bt.setText("Set as wallpaper");
+              bt.setOnClickListener(v -> {
+                Intent i = new Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER);
+                i.putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT, new ComponentName(this, AagService.class));
+                startActivity(i);
+              });
+              FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+              lp.setMargins(20, 80, 0, 0); f.addView(bt, lp);
+              setContentView(f);
+            }
+          }
+          EOF
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AAG-wallpaper-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
