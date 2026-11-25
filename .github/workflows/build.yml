@@ -114,7 +114,7 @@ jobs:
               super.onCreate(b);
               WebView wv = new WebView(this);
               wv.getSettings().setJavaScriptEnabled(true); wv.getSettings().setDomStorageEnabled(true);
-              wv.loadUrl("file:///android_asset/wallpaper.html");
+              wv.loadUrl("file:///android_asset/wallpaper.html?settings=1");
               FrameLayout f = new FrameLayout(this); f.addView(wv);
               Button bt = new Button(this); bt.setText("Set as wallpaper");
               bt.setOnClickListener(v -> {
